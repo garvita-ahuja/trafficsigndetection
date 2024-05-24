@@ -1,0 +1,152 @@
+from keras.applications import InceptionV3
+from keras.layers import GlobalAveragePooling2D
+import numpy as np
+
+# Resize input images to meet the minimum size requirement of InceptionV3
+def resize_images(images):
+    resized_images = []
+    for image in images:
+        resized_image = tf.image.resize(image, (75, 75))
+        resized_images.append(resized_image)
+    return np.array(resized_images)
+
+# Load InceptionV3 model pre-trained on ImageNet data
+base_model = InceptionV3(weights='imagenet', include_top=False, input_shape=(75, 75, 3))
+
+# Freeze the convolutional layers
+for layer in base_model.layers:
+    layer.trainable = False
+
+# Resize input data
+X_train_resized = resize_images(X_train)
+X_test_resized = resize_images(X_test)
+
+# Add custom layers on top of InceptionV3
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dense(256, activation='relu')(x)
+x = Dropout(0.5)(x)
+predictions = Dense(43, activation='softmax')(x)
+
+# Create the final model
+model_inception = tf.keras.models.Model(inputs=base_model.input, outputs=predictions)
+
+# Compile the model
+model_inception.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+import os
+# Import EarlyStopping callback
+from keras.callbacks import EarlyStopping, ModelCheckpoint
+# Create a folder named "checkpoints" if it doesn't exist
+checkpoints_folder = "/content/drive/MyDrive/checkpoints"
+if not os.path.exists(checkpoints_folder):
+    os.makedirs(checkpoints_folder)
+checkpoint_inception_path = os.path.join(checkpoints_folder, "model_inception_german.h5")
+
+# Define model callbacks for saving checkpoints
+checkpoint_inception = ModelCheckpoint(checkpoint_inception_path, monitor='val_accuracy', verbose=1, save_best_only=True, mode='max')
+
+
+# Train the model
+history_inception = model_inception.fit(X_train_resized, y_train, validation_data=(X_test_resized, y_test), epochs=20, batch_size=32, callbacks=[checkpoint_inception])
+
+from sklearn.metrics import confusion_matrix, classification_report
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Predict labels for the test set
+y_pred = model_inception.predict(X_test_resized)
+y_pred_classes = np.argmax(y_pred, axis=1)
+y_true_classes = np.argmax(y_test, axis=1)
+
+# Compute confusion matrix
+conf_matrix = confusion_matrix(y_true_classes, y_pred_classes)
+
+cr=classification_report(y_true_classes, y_pred_classes)
+print(cr)
+
+# Plot confusion matrix
+plt.figure(figsize=(10, 8))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', cbar=False)
+plt.xlabel('Predicted Labels')
+plt.ylabel('True Labels')
+plt.title('InceptionV3 Confusion Matrix')
+plt.show()
+
+import matplotlib.pyplot as plt
+
+# Get training history
+training_loss = history_inception.history['loss']
+validation_loss = history_inception.history['val_loss']
+training_accuracy = history_inception.history['accuracy']
+validation_accuracy = history_inception.history['val_accuracy']
+epochs = range(1, len(training_loss) + 1)
+
+# Plot model loss over time
+plt.figure(figsize=(10, 8))
+plt.plot(epochs, training_loss, 'b', label='Training Loss')
+plt.plot(epochs, validation_loss, 'r', label='Validation Loss')
+plt.title('SignV3 Model Loss Over Time (GTSRB)')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Plot model accuracy over time
+plt.figure(figsize=(10, 8))
+plt.plot(epochs, training_accuracy, 'b', label='Training Accuracy')
+plt.plot(epochs, validation_accuracy, 'r', label='Validation Accuracy')
+plt.title('SignV3 Model Accuracy Over Time (GTSRB)')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+from sklearn.metrics import roc_curve, auc
+from sklearn.preprocessing import LabelBinarizer
+import matplotlib.pyplot as plt
+
+# Binarize the output
+lb = LabelBinarizer()
+lb.fit(y_true_classes)
+y_test_bin = lb.transform(y_true_classes)
+y_pred_bin = lb.transform(y_pred_classes)
+
+# Compute ROC curve and ROC area for each class
+fpr = dict()
+tpr = dict()
+roc_auc = dict()
+for i in range(43):
+    fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_pred_bin[:, i])
+    roc_auc[i] = auc(fpr[i], tpr[i])
+
+# Compute micro-average ROC curve and ROC area
+fpr["micro"], tpr["micro"], _ = roc_curve(y_test_bin.ravel(), y_pred_bin.ravel())
+roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
+
+# Compute macro-average ROC curve and ROC area
+all_fpr = np.unique(np.concatenate([fpr[i] for i in range(43)]))
+mean_tpr = np.zeros_like(all_fpr)
+for i in range(43):
+    mean_tpr += np.interp(all_fpr, fpr[i], tpr[i])
+mean_tpr /= 43
+fpr["macro"] = all_fpr
+tpr["macro"] = mean_tpr
+roc_auc["macro"] = auc(fpr["macro"], tpr["macro"])
+
+
+# Plot all ROC curves
+plt.figure(figsize=(10, 8))
+plt.plot(fpr["micro"], tpr["micro"],
+         label='micro-average ROC curve (area = {0:0.2f})'
+               ''.format(roc_auc["micro"]),
+         color='purple', linestyle=':', linewidth=4)
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('InceptionV3 Receiver Operating Characteristic (GTSRB)')
+plt.legend(loc="lower right")
+plt.show()
