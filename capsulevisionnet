@@ -1,0 +1,190 @@
+
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras import backend as K
+
+# Custom Capsule Layer
+class CapsuleLayer(layers.Layer):
+    def __init__(self, num_capsules, capsule_dim, routing_iters=3):
+        super(CapsuleLayer, self).__init__()
+        self.num_capsules = num_capsules
+        self.capsule_dim = capsule_dim
+        self.routing_iters = routing_iters
+
+    def build(self, input_shape):
+        # Initialize transformation matrices
+        input_dim = input_shape[-1]
+        self.W = self.add_weight(shape=(1, self.num_capsules, input_dim, self.capsule_dim),
+                                 initializer='glorot_uniform', trainable=True)
+
+    def call(self, inputs):
+        # Perform matrix multiplication to compute predicted output vectors
+        u_hat = tf.matmul(inputs, self.W)
+        # Dynamic routing algorithm
+        return self.dynamic_routing(u_hat)
+
+    def dynamic_routing(self, u_hat):
+        # Initialize coupling coefficients
+        b = tf.zeros(shape=[tf.shape(u_hat)[0], self.num_capsules, tf.shape(u_hat)[2], 1])
+        # Perform dynamic routing iteratively
+        for i in range(self.routing_iters):
+            c = tf.nn.softmax(b, axis=1)  # Compute coupling coefficients
+            s = tf.reduce_sum(tf.multiply(c, u_hat), axis=1, keepdims=True)  # Weighted sum
+            v = self.squash(s)  # Apply non-linear squashing function
+            if i < self.routing_iters - 1:
+                # Update coupling coefficients for the next iteration
+                b += tf.matmul(u_hat, v, transpose_a=True)
+        return v
+
+    def squash(self, s):
+        squared_norm = tf.reduce_sum(tf.square(s), axis=-2, keepdims=True)
+        scale = squared_norm / (1 + squared_norm)
+        return scale * s / tf.sqrt(squared_norm + tf.keras.backend.epsilon())
+
+
+import tensorflow as tf
+from keras.models import Sequential
+from keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+from keras.layers import Layer
+from keras.utils import to_categorical
+
+
+# Define custom CNN architecture with Capsule layers
+def custom_cnn_with_capsule(input_shape, num_classes):
+    model_cnn_capsule = Sequential()
+    model_cnn_capsule.add(Conv2D(32, kernel_size=(3, 3), activation='relu', input_shape=input_shape))
+    model_cnn_capsule.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
+    model_cnn_capsule.add(MaxPooling2D(pool_size=(2, 2)))
+    model_cnn_capsule.add(Conv2D(64, kernel_size=(3, 3), activation='relu'))
+    model_cnn_capsule.add(MaxPooling2D(pool_size=(2, 2)))
+    model_cnn_capsule.add(Flatten())
+    model_cnn_capsule.add(Dense(128, activation='relu'))
+    model_cnn_capsule.add(CapsuleLayer(num_capsules=10, capsule_dim=16))
+    model_cnn_capsule.add(Flatten())  # Add this line
+    model_cnn_capsule.add(Dense(num_classes, activation='softmax'))
+    return model_cnn_capsule
+
+
+import os
+# Import EarlyStopping callback
+from keras.callbacks import EarlyStopping, ModelCheckpoint
+# Create a folder named "checkpoints" if it doesn't exist
+checkpoints_folder = "/content/drive/MyDrive/checkpoints"
+if not os.path.exists(checkpoints_folder):
+    os.makedirs(checkpoints_folder)
+checkpoint_capsule_path = os.path.join(checkpoints_folder, "model_capsule_german.h5")
+
+# Define model callbacks for saving checkpoints
+checkpoint_capsule = ModelCheckpoint(checkpoint_capsule_path, monitor='val_accuracy', verbose=1, save_best_only=True, mode='max')
+
+
+input_shape = (30, 30, 3)  
+num_classes = 43 
+
+# Instantiate custom CNN model with Capsule layers
+model_cnn_capsule = custom_cnn_with_capsule(input_shape, num_classes)
+
+# Compile the model
+model_cnn_capsule.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Train the model
+history_cnn_capsule = model_cnn_capsule.fit(X_train, y_train, epochs=20, validation_data=(X_test, y_test), batch_size=16, callbacks=[checkpoint_capsule])
+
+# Evaluate the model
+test_loss, test_acc = model_cnn_capsule.evaluate(X_test, y_test)
+print("Test Accuracy:", test_acc)
+
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+# Calculate model loss and accuracy over time
+training_loss = history_cnn_capsule.history['loss']
+validation_loss = history_cnn_capsule.history['val_loss']
+training_accuracy = history_cnn_capsule.history['accuracy']
+validation_accuracy = history_cnn_capsule.history['val_accuracy']
+epochs = range(1, len(training_loss) + 1)
+
+# Plot model loss over time
+plt.figure(figsize=(12, 5))
+plt.plot(epochs, training_loss, 'b', label='Training Loss')
+plt.plot(epochs, validation_loss, 'r', label='Validation Loss')
+plt.title('Capsule CNN Model Loss Over Time (GTSRB)')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Plot model accuracy over time
+plt.figure(figsize=(10, 8))
+plt.plot(epochs, training_accuracy, 'b', label='Training Accuracy')
+plt.plot(epochs, validation_accuracy, 'r', label='Validation Accuracy')
+plt.title('Capsule CNN Model Accuracy Over Time (GTSRB)')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Predict classes for test data
+y_pred = model_cnn_capsule.predict(X_test)
+y_pred_classes = np.argmax(y_pred, axis=1)
+y_true_classes = np.argmax(y_test, axis=1)
+
+# Generate confusion matrix
+conf_matrix = confusion_matrix(y_true_classes, y_pred_classes)
+
+# Plot confusion matrix
+plt.figure(figsize=(10, 8))
+ConfusionMatrixDisplay(conf_matrix, display_labels=label_encoder.classes_).plot(cmap='Blues')
+plt.title('Capsule CNN Confusion Matrix (GTSRB)')
+plt.show()
+
+from sklearn.metrics import roc_curve, auc
+from sklearn.preprocessing import label_binarize
+from scipy import interp
+from itertools import cycle
+
+# Binarize the output
+y_test_bin = label_binarize(y_true_classes, classes=[i for i in range(num_classes)])
+y_pred_bin = model_cnn_capsule.predict(X_test)
+
+# Compute ROC curve and ROC area for each class
+fpr = dict()
+tpr = dict()
+roc_auc = dict()
+for i in range(num_classes):
+    fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_pred_bin[:, i])
+    roc_auc[i] = auc(fpr[i], tpr[i])
+
+# Compute micro-average ROC curve and ROC area
+fpr["micro"], tpr["micro"], _ = roc_curve(y_test_bin.ravel(), y_pred_bin.ravel())
+roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
+
+# Compute macro-average ROC curve and ROC area
+all_fpr = np.unique(np.concatenate([fpr[i] for i in range(num_classes)]))
+mean_tpr = np.zeros_like(all_fpr)
+for i in range(num_classes):
+    mean_tpr += interp(all_fpr, fpr[i], tpr[i])
+mean_tpr /= num_classes
+fpr["macro"] = all_fpr
+tpr["macro"] = mean_tpr
+roc_auc["macro"] = auc(fpr["macro"], tpr["macro"])
+
+# Plot all ROC curves
+plt.figure(figsize=(10, 8))
+plt.plot(fpr["micro"], tpr["micro"],
+         label='micro-average ROC curve (area = {0:0.2f})'
+               ''.format(roc_auc["micro"]),
+         color='purple', linestyle=':', linewidth=4)
+
+
+plt.plot([0, 1], [0, 1], 'k--', lw=2)
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) for Capsule CNN Model(GLARE dataset)')
+plt.legend(loc="lower right")
+plt.show()
